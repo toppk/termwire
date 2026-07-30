@@ -2,8 +2,12 @@
 
 The missing session layer between shells and terminal windows. A per-user
 daemon owns every PTY; terminals become lightweight clients that attach to
-those sessions. See [TermWire-Vision.md](TermWire-Vision.md) for the full
-picture.
+those sessions.
+
+**Documentation: <https://toppk.github.io/termwire/>** — the manifesto
+(why terminal ownership needs to move) and the architecture. Source in
+[docs/](docs/), deployed by the Pages workflow. See also
+[TermWire-Vision.md](TermWire-Vision.md), the original vision notes.
 
 ## Status
 

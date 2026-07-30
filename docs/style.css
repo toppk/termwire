@@ -1,7 +1,7 @@
 /* TermWire documentation.
- * Visual homage to pid eins (0pointer.net/blog, the svbhack theme):
- * monospace everywhere, white page, one red accent, no decoration
- * that a 2010 hacker blog would not have had. */
+ * Visual homage to pid eins / 0pointer.de: monospace everywhere,
+ * white page, one red accent, a sticky left column with the logo and
+ * links, and no decoration a 2010 hacker blog would not have had. */
 
 :root {
     --fg: #333333;
@@ -20,9 +20,7 @@ html {
 }
 
 body {
-    margin: 0 auto;
-    padding: 2.5rem 1.25rem 4rem;
-    max-width: 47rem;
+    margin: 0;
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono",
         monospace;
     line-height: 1.65;
@@ -30,15 +28,34 @@ body {
     background: #ffffff;
 }
 
-/* -- Site header ---------------------------------------------------- */
+.page {
+    display: flex;
+    align-items: flex-start;
+    gap: 3rem;
+    max-width: 66rem;
+    margin: 0 auto;
+    padding: 2.5rem 1.25rem 4rem;
+}
 
-.site-header {
-    margin-bottom: 3rem;
+/* -- Sidebar (sticky left column) ----------------------------------- */
+
+.sidebar {
+    position: sticky;
+    top: 2rem;
+    width: 11.5rem;
+    flex-shrink: 0;
+}
+
+.logo {
+    display: block;
+    width: 100%;
+    max-width: 9.5rem;
+    border-radius: 8px;
 }
 
 .site-title {
-    margin: 0;
-    font-size: 2.1rem;
+    margin: 0.9rem 0 0;
+    font-size: 1.45rem;
     font-weight: 700;
     letter-spacing: -0.02em;
 }
@@ -49,21 +66,41 @@ body {
 }
 
 .site-tagline {
-    margin: 0.15rem 0 0.9rem;
+    margin: 0.2rem 0 0;
     color: var(--fg-soft);
+    font-size: 0.85rem;
+    line-height: 1.45;
 }
 
-.site-nav a {
-    margin-right: 1.4rem;
+.sidebar nav {
+    margin-top: 0.4rem;
+}
+
+.nav-head {
+    margin: 1.5rem 0 0.25rem;
+    color: var(--fg-soft);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+}
+
+.sidebar nav a {
+    display: block;
+    margin: 0.15rem 0;
     color: var(--accent);
     text-decoration: none;
 }
 
-.site-nav a:hover {
+.sidebar nav a:hover {
     text-decoration: underline;
 }
 
 /* -- Content -------------------------------------------------------- */
+
+.content {
+    min-width: 0;
+    max-width: 47rem;
+}
 
 a {
     color: var(--accent);
@@ -179,4 +216,31 @@ dd {
 
 .site-footer p {
     margin: 0 0 0.4rem;
+}
+
+/* -- Narrow screens: sidebar becomes a plain header ------------------ */
+
+@media (max-width: 54rem) {
+    .page {
+        display: block;
+    }
+
+    .sidebar {
+        position: static;
+        width: auto;
+        margin-bottom: 2.5rem;
+    }
+
+    .logo {
+        max-width: 5.5rem;
+    }
+
+    .sidebar nav a {
+        display: inline-block;
+        margin: 0 1.1rem 0 0;
+    }
+
+    .nav-head {
+        display: none;
+    }
 }

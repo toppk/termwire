@@ -6,19 +6,30 @@
 <title>Rethinking the Terminal — TermWire</title>
 <meta name="description" content="TermWire is the missing session layer between shells and terminal windows: a per-user runtime that owns every PTY, with terminals as lightweight views.">
 <link rel="stylesheet" href="style.css">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23a81817'/%3E%3Ctext x='3' y='12' font-family='monospace' font-size='11' fill='white'%3E%26gt;%3C/text%3E%3C/svg%3E">
+<link rel="icon" type="image/png" href="logo.png">
 </head>
 <body>
 
-<header class="site-header">
+<div class="page">
+
+<aside class="sidebar">
+  <a href="index.html"><img class="logo" src="logo.png" alt="TermWire logo"></a>
   <p class="site-title"><a href="index.html">TermWire</a></p>
   <p class="site-tagline">the missing session layer for the terminal</p>
-  <nav class="site-nav">
+  <nav>
+    <p class="nav-head">Docs</p>
     <a href="index.html">Manifesto</a>
     <a href="architecture.html">Architecture</a>
+    <p class="nav-head">Links</p>
     <a href="https://github.com/toppk/termwire">GitHub</a>
+    <a href="https://github.com/toppk/termwire/issues">Issues</a>
+    <a href="https://ghostty.org/">Ghostty</a>
+    <a href="https://xtermjs.org/">xterm.js</a>
+    <a href="https://0pointer.net/blog/">pid eins</a>
   </nav>
-</header>
+</aside>
+
+<div class="content">
 
 <main>
 
@@ -365,6 +376,10 @@ details, protocol formats, and build instructions.</p>
   <a href="http://0pointer.de/blog/projects/systemd.html">Rethinking
   PID 1</a>.</p>
 </footer>
+
+</div>
+
+</div>
 
 </body>
 </html>

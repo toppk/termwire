@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Architecture — TermWire</title>
+<meta name="description" content="TermWire architecture: the session runtime, control and data planes, wire formats, and how to build it.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23a81817'/%3E%3Ctext x='3' y='12' font-family='monospace' font-size='11' fill='white'%3E%26gt;%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+
+<header class="site-header">
+  <p class="site-title"><a href="index.html">TermWire</a></p>
+  <p class="site-tagline">the missing session layer for the terminal</p>
+  <nav class="site-nav">
+    <a href="index.html">Manifesto</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="https://github.com/toppk/termwire">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<h1>Architecture</h1>
+<p class="post-date">30 Jul 2026 — describes the implementation as of today; this document tracks the code, not the roadmap</p>
+
+<h2>The shape of it</h2>
+
+<pre><code>                       ┌──────────────────────────────┐
+  shell ── PTY ────────┤          termwired           │
+  vim   ── PTY ────────┤   per-user session runtime   │
+  agent ── PTY ────────┤                              │
+                       │  owns: PTYs, processes,      │
+                       │  screen state, scrollback,   │
+                       │  (later: workspaces, leases) │
+                       └──────┬────────────┬──────────┘
+                       control plane   data plane
+                       (JSON, one     (framed in /
+                        socket)        raw out, one
+                              │        socket per session)
+                              │            │
+                    ┌─────────┴──┬─────────┴─┬───────────┐
+                    │  tw (CLI)  │  browser  │  desktop  │
+                    │   today    │   next    │   later   │
+                    └────────────┴───────────┴───────────┘</code></pre>
+
+<p>One daemon per user. Applications keep believing they talk to an
+ordinary terminal — they do: an ordinary PTY whose master side is
+held by the runtime instead of by a window. Clients are
+interchangeable views that attach and detach at will; the session's
+lifetime belongs to the runtime alone.</p>
+
+<h2>Components</h2>
+
+<table>
+  <tr><th>Path</th><th>What it is</th></tr>
+  <tr><td><code>daemon/</code></td><td><code>termwired</code> — the runtime: a single-threaded poll loop owning all sessions, both socket planes, and the VT state</td></tr>
+  <tr><td><code>protocol/</code></td><td>wire-format types and socket helpers shared by daemon and clients</td></tr>
+  <tr><td><code>cli/</code></td><td><code>tw</code> — CLI client: <code>new</code>, <code>ls</code>, <code>attach</code>, <code>kill</code></td></tr>
+  <tr><td><code>web/</code></td><td>browser client (xterm.js) — next milestone</td></tr>
+  <tr><td><code>third_party/ghostty</code></td><td>vendored Ghostty; the daemon imports its <code>ghostty-vt</code> Zig module (libghostty-vt) for terminal emulation</td></tr>
+  <tr><td><code>third_party/xterm.js</code></td><td>vendored xterm.js 6.0.0 for the browser client</td></tr>
+</table>
+
+<h2>Runtime directory</h2>
+
+<p>Everything lives under <code>$XDG_RUNTIME_DIR/termwire/</code>
+(fallback <code>/tmp/termwire-&lt;uid&gt;/</code>, mode 0700):</p>
+
+<pre><code>$XDG_RUNTIME_DIR/termwire/
+    control.sock        control plane (one per user)
+    session-1.sock      data plane (one per session)
+    session-2.sock
+    ...</code></pre>
+
+<h2>Control plane</h2>
+
+<p>Newline-delimited JSON over <code>control.sock</code>: one request
+per line, one response per line, connection stays open. Structured,
+out-of-band, never tunneled through the terminal stream.</p>
+
+<pre><code>$ python3 -c '
+import socket, json, os
+s = socket.socket(socket.AF_UNIX)
+s.connect(os.environ["XDG_RUNTIME_DIR"] + "/termwire/control.sock")
+s.sendall(b"{\"op\":\"create_session\",\"cols\":120,\"rows\":40}\n")
+print(s.recv(4096).decode())'
+
+{"ok":true,"session":{"id":1,"pid":184532,"cols":120,"rows":40,
+ "socket_path":"/run/user/1000/termwire/session-1.sock"}}</code></pre>
+
+<p>Current operations:</p>
+
+<table>
+  <tr><th>op</th><th>fields</th><th>effect</th></tr>
+  <tr><td><code>create_session</code></td><td><code>cols</code>, <code>rows</code> (optional)</td><td>spawn <code>$SHELL</code> on a fresh runtime-owned PTY; returns the session and its data socket path</td></tr>
+  <tr><td><code>list_sessions</code></td><td>—</td><td>enumerate live sessions</td></tr>
+  <tr><td><code>kill_session</code></td><td><code>id</code></td><td>SIGHUP the session's process group; the session is reaped when the child exits</td></tr>
+</table>
+
+<p>Workspaces, attach leases, permissions, and agent operations will
+be further ops on this same plane.</p>
+
+<h2>Data plane</h2>
+
+<p>One Unix socket per session. Deliberately dumb — this is the path
+every output byte takes, so no JSON, no policy, no parsing beyond a
+5-byte frame header.</p>
+
+<p><strong>Client → daemon</strong> is framed:</p>
+
+<pre><code>offset  size  field
+0       1     type      0 = data, 1 = resize
+1       4     length    u32 little-endian payload length
+5       n     payload</code></pre>
+
+<table>
+  <tr><th>type</th><th>payload</th></tr>
+  <tr><td><code>data</code></td><td>keyboard/stdin bytes, written verbatim to the PTY (max 4096 per frame; chunk larger writes)</td></tr>
+  <tr><td><code>resize</code></td><td>4 bytes: cols u16le, rows u16le → <code>TIOCSWINSZ</code></td></tr>
+</table>
+
+<p><strong>Daemon → client</strong> is the raw PTY output byte
+stream, unframed. Multiple clients may be attached; today all of
+them receive output and all of them may write (the one-controller
+lease is on the roadmap, not in the code).</p>
+
+<h2>The VT engine</h2>
+
+<p>The daemon links Ghostty's terminal core, consumed as the
+<code>ghostty-vt</code> Zig module straight from the vendored tree —
+the same VT emulation Ghostty ships to its users, not a
+reimplementation. This is what will make the runtime the canonical
+owner of screen state and scrollback: bytes from the PTY flow
+through <code>ghostty.TerminalStream</code> into a
+<code>ghostty.Terminal</code> per session, and any client — a
+reattaching CLI, a browser tab, a phone — can be brought current
+from the runtime's copy instead of keeping its own. Today this
+wiring is proven in tests; hooking every session's output through it
+and replaying on attach is the next milestone after the browser
+client.</p>
+
+<h2>Building</h2>
+
+<p>Requires Zig 0.16.0 — exactly. Zig build-system APIs shift
+between minor versions, and the vendored Ghostty is pinned to match;
+the two move together (see the README for the current pins).</p>
+
+<pre><code>$ git clone https://github.com/toppk/termwire
+$ cd termwire
+$ git submodule update --init --depth 1
+$ zig build
+$ zig build test</code></pre>
+
+<p>Try it:</p>
+
+<pre><code>$ zig-out/bin/termwired            # terminal 1: the runtime
+$ zig-out/bin/tw new               # terminal 2: create + attach
+$ MARCO=polo                       #   ... do some work ...
+                                   #   Ctrl-\ detaches; close the window
+$ zig-out/bin/tw ls                # later, any terminal:
+ID     PID      SIZE      SOCKET
+1      184532   120x40    /run/user/1000/termwire/session-1.sock
+$ zig-out/bin/tw attach 1          # your shell, exactly as you left it
+$ echo $MARCO
+polo</code></pre>
+
+<h2>Honest limitations, today</h2>
+
+<ul>
+  <li>No scrollback replay yet — reattaching shows new output only.</li>
+  <li>No backpressure: a stuck client can stall the loop on write.</li>
+  <li>No single-instance lock; a second daemon stomps the first's
+  control socket.</li>
+  <li>No controller lease: every attached client can type.</li>
+  <li>Daemon crash takes sessions with it (see the
+  <a href="index.html#faq">manifesto FAQ</a>).</li>
+</ul>
+
+<h2>Milestones</h2>
+
+<ol>
+  <li><strong>Done:</strong> runtime daemon, PTY ownership, control
+  plane, data plane, CLI attach/detach, ghostty-vt linked and
+  tested.</li>
+  <li><strong>Next:</strong> browser client — WebSocket bridge in
+  the daemon, xterm.js view in <code>web/</code>.</li>
+  <li>Runtime-owned scrollback and screen-state replay on
+  attach.</li>
+  <li>Workspace model; read-only observers; controller leases.</li>
+  <li>Native desktop client, mobile, collaboration, and the agent
+  API.</li>
+</ol>
+
+</main>
+
+<footer class="site-footer">
+  <p>TermWire — <a href="https://github.com/toppk/termwire">github.com/toppk/termwire</a></p>
+  <p>Design is an homage to <a href="https://0pointer.net/blog/">pid
+  eins</a>; the essay structure owes an obvious debt to
+  <a href="http://0pointer.de/blog/projects/systemd.html">Rethinking
+  PID 1</a>.</p>
+</footer>
+
+</body>
+</html>

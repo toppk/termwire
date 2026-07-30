@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rethinking the Terminal — TermWire</title>
+<meta name="description" content="TermWire is the missing session layer between shells and terminal windows: a per-user runtime that owns every PTY, with terminals as lightweight views.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23a81817'/%3E%3Ctext x='3' y='12' font-family='monospace' font-size='11' fill='white'%3E%26gt;%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+
+<header class="site-header">
+  <p class="site-title"><a href="index.html">TermWire</a></p>
+  <p class="site-tagline">the missing session layer for the terminal</p>
+  <nav class="site-nav">
+    <a href="index.html">Manifesto</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="https://github.com/toppk/termwire">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<h1>Rethinking the Terminal</h1>
+<p class="post-date">30 Jul 2026</p>
+
+<p>If you follow what has been happening to the terminal lately — the
+new emulators, the multiplexers, the AI agents that suddenly live in
+your shell — you might already have guessed what this project is
+about. Here is the one sentence summary: we are experimenting with a
+new session layer for the terminal, and it is fun.</p>
+
+<p>What follows is the longer version: why we think the way Unix
+desktops handle terminals is built on an ownership model that stopped
+making sense, what other subsystems went through the same crisis and
+how they got out of it, and what we are building instead. This is not
+a pitch for a better terminal emulator, and it is not a pitch for a
+better tmux. It is an argument that a piece of the stack is missing,
+and a proposal for what that piece should look like.</p>
+
+<h2>Process, PTY, Window</h2>
+
+<p>The pseudo-terminal has been with Unix since the early eighties,
+and xterm arrived in 1984. The arrangement they established is so
+familiar that we no longer see it as a design decision at all: a
+terminal emulator opens a PTY pair, keeps the master side for itself,
+starts your shell on the slave side, and paints the results into a
+window. The application believes it is talking to a DEC terminal from
+1978. The user believes they are looking at their shell. Both are
+happy.</p>
+
+<pre><code>process → PTY → terminal window</code></pre>
+
+<p>Every terminal emulator you can name today — xterm,
+gnome-terminal, kitty, alacritty, Ghostty, iTerm2 — implements
+exactly this. Whatever else they compete on, GPU rendering or
+ligatures or tabs, the ownership model is identical: <em>the window
+owns the PTY, and therefore the window owns your shell.</em></p>
+
+<h2>The Window Owns Your Shell</h2>
+
+<p>That ownership has a consequence everyone has been burned by:
+close the window and the kernel sends SIGHUP to everything on the
+other side. The work dies with the view. Forty years of muscle memory
+have taught us to treat this as a law of nature — you do not close
+that window, that window has the build in it.</p>
+
+<p>Meanwhile, what actually runs in our terminals changed. A modern
+development session is not one shell. It is a handful of AI agent
+sessions, a build that has been going for twenty minutes, diagnostics
+that have been collecting for hours, an ssh session into a staging
+box, a database console, and a couple of experiments you have not
+decided about yet. These are not independent windows. They are
+facets of a single task, and tomorrow you will want the same set
+back.</p>
+
+<p>Today's desktop has no object that represents any of that. The
+relationship between those terminals exists only in your head. The
+terminal emulator cannot help you, because each window only knows
+about its own PTY — and when it goes, its PTY goes with it.</p>
+
+<p>The bug is not in any particular emulator. The bug is in who owns
+what.</p>
+
+<h2>A Lesson from ZFS</h2>
+
+<p>When ZFS merged the volume manager and the filesystem, kernel
+developers famously dismissed it as a <em>rampant layering
+violation</em>. The layers were sacred: block devices below,
+filesystems above, and never shall information cross. Jeff Bonwick's
+answer was that layering is a tool, not a commandment — and that the
+traditional boundary hid exactly the information both sides needed.
+The filesystem knew which blocks mattered; the volume manager knew
+which disks were healthy; the interface between them made both
+ignorant. Move the boundary, and suddenly end-to-end checksums,
+self-healing mirrors, and O(live data) resilvering fall out almost
+for free.</p>
+
+<p>History sided with ZFS. The lesson was not "layers are bad" — the
+lesson was that <em>an abstraction boundary drawn in the wrong place
+taxes everything built on top of it.</em></p>
+
+<p>The boundary between shell, PTY, and terminal emulator was drawn
+in the early eighties, for hardware terminals on serial lines. It
+puts session lifetime — the thing users actually care about — on the
+wrong side of the line, bound to a window. We propose to move the
+boundary. Not to break the layers: to redraw them where today's
+workflows actually are.</p>
+
+<h2>A Lesson from Linux Audio</h2>
+
+<p>If ZFS shows that boundaries can move, Linux audio shows what
+happens to a subsystem while the boundary is wrong — and how it feels
+when it finally lands in the right place.</p>
+
+<p>In the beginning, applications opened <code>/dev/dsp</code>
+directly and owned the sound card outright. One application at a
+time. The nineties answer was sound servers — esd, aRts — bolted on
+top so two programs could beep at once, each a workaround with its
+own protocol, none of them the actual owner of anything.</p>
+
+<p>PulseAudio got the architecture right: a per-user daemon owns the
+devices, and applications become clients. That model won, and it was
+correct — but the early years were rough, in part because too much
+policy sat in the path of too many samples. Getting the ownership
+right is not enough; the runtime must also be engineered so the fast
+path stays fast.</p>
+
+<p>PipeWire is the proof of the complete lesson. Same ownership
+model — a per-user daemon owns the hardware, everything else is a
+client — but built around a minimal, predictable data path, with
+policy pushed out to a separate session manager. The result is that
+nobody argues about Linux audio anymore. It also absorbed video
+capture and screen sharing along the way, because once the right
+runtime exists, adjacent problems collapse into it.</p>
+
+<p>Now look at terminals with those glasses on. Every emulator opens
+its own "device" — a PTY — and owns it exclusively, invisible to
+everything else. Multiplexers are our esd: a workaround layered on
+top, speaking its own in-band protocol, papering over an ownership
+problem it cannot actually fix. We are in the
+<code>/dev/dsp</code> era of terminals. The per-user runtime that
+should own this resource simply does not exist yet.</p>
+
+<h2>What About tmux?</h2>
+
+<p>Anyone who has read this far is thinking it: screen has existed
+since 1987, tmux since 2007. Don't they solve this?</p>
+
+<p>They solve one piece — persistence — and their popularity is the
+strongest evidence that the ownership model is wrong. Millions of
+people run a terminal emulator inside their terminal emulator just so
+their shells can outlive their windows. Users have been routing
+around this bug for almost forty years.</p>
+
+<p>But a multiplexer lives in the only place it can: inside the byte
+stream. And that location dictates everything painful about it. Its
+control plane is tunneled through the terminal protocol itself —
+prefix keys the applications underneath must not see, a status line
+drawn in-band, copy-mode fighting your emulator's native selection,
+scrollback double-buffered in two places that disagree, nested
+sessions that break in ways nobody can explain. tmux's control mode
+(<code>-CC</code>, which iTerm2 uses) is the exception that proves
+the rule: the moment you want terminals to be real windows again, you
+need a structured out-of-band protocol — and then you are speaking it
+through a channel that was never designed to carry one.</p>
+
+<p>The lesson we take from tmux is precise: <em>persistence belongs
+below the emulator, and management belongs outside the byte
+stream.</em> tmux could deliver the first only by violating the
+second. It solved persistence; we want to keep that and move the
+control plane out of the pipe.</p>
+
+<h2>Sessions Are Not Windows</h2>
+
+<p>So here is the proposal, in one line of pipeline:</p>
+
+<pre><code>process → PTY → session runtime → views</code></pre>
+
+<p>A per-user daemon — the session runtime — owns every PTY, the
+processes on them, their canonical screen state, and their
+scrollback. Terminal windows stop being owners and become
+<em>views</em>: lightweight clients that attach to a session, render
+it, and feed it input. Closing a view closes nothing but the view. A
+session might be displayed in a native desktop terminal right now, in
+a browser tab this afternoon, on your phone tonight, and by a
+colleague — read-only — during tomorrow's incident. One interactive
+controller at a time, handed between clients through a lease;
+observers as many as you like.</p>
+
+<p>Above sessions sits the object your desktop never had: the
+<em>workspace</em>. A workspace groups the terminals, agents, notes,
+and diagnostics that belong to one task. The grouping is semantic,
+not visual — it is not "which monitor is this window on", it is
+"which problem does this belong to". Your task survives your logout,
+because the runtime is its home; the windows were only ever
+spectators.</p>
+
+<p>And, as with audio, the split that made PipeWire work is
+load-bearing here: the <em>data plane</em> (keystrokes in, bytes
+out, resizes) is dumb, fast, and minimal — the <em>control plane</em>
+(create, attach, rename, move to workspace, permissions,
+collaboration) is a structured API that never rides inside the
+terminal stream. Every byte your build prints does not deserve a
+policy decision.</p>
+
+<h2>Terminals Have New Users</h2>
+
+<p>There is one more thing that changed, and it changed fast: humans
+are no longer the only things driving terminals. AI agents run
+builds, tail logs, bisect regressions. Today each agent owns a hidden
+PTY you cannot see, or worse, pastes commands at you to copy into
+your own shell. The terminal — the most automatable interface
+computing ever produced — has no first-class notion of a non-human
+participant.</p>
+
+<p>With a session runtime, an agent is just another client with its
+own credentials and its own permissions. It asks the runtime:
+<em>create a terminal in this workspace and run this command</em> —
+subject to user approval. The session it creates is a real session:
+you can watch it live, scroll back through everything it did, take
+over the controller lease mid-run, and audit it after the fact,
+because the canonical record lives in the runtime, not in some
+process's private buffer. Agents become peers instead of
+puppeteers — and, just as important, become <em>observable</em>.</p>
+
+<h2>Behaving Like XTerm</h2>
+
+<p>A rule we consider non-negotiable, because plumbing that breaks
+userspace is plumbing that gets removed: the default experience must
+be indistinguishable from a traditional terminal. Your shell, vim,
+emacs, htop, ssh, every curses application ever written — all of it
+keeps working, byte for byte, because applications still see an
+ordinary PTY and clients still render an ordinary terminal.
+TermWire's terminal emulation is Ghostty's VT engine, extracted as
+<code>libghostty-vt</code> — the same code that already renders
+terminals for thousands of daily users, not a reimplementation.
+Everything new is additive. If we cannot meet that bar, we do not
+deserve the ownership we are asking for.</p>
+
+<h2>Putting It All Together: TermWire</h2>
+
+<p>TermWire is the working implementation of this argument:</p>
+
+<ul>
+  <li><strong>termwired</strong>, a per-user daemon that owns every
+  PTY, the processes on them, and — via Ghostty's VT engine — the
+  canonical screen state and scrollback of every session.</li>
+  <li>A <strong>control plane</strong>: structured requests over a
+  Unix socket. Create a session, list them, attach, kill, and in
+  time: workspaces, leases, permissions, agent requests. Never
+  tunneled through escape sequences.</li>
+  <li>A <strong>data plane</strong>: a dumb, fast pipe per session.
+  Keystrokes and resizes in, raw PTY bytes out.</li>
+  <li><strong>Clients</strong> that are all views on the same
+  sessions: a CLI (<code>tw</code>) today, a browser client speaking
+  to xterm.js next, native desktop and mobile clients after
+  that.</li>
+</ul>
+
+<p>The name says the rest of it: what PipeWire became for audio and
+video on the Linux desktop, TermWire intends to become for
+terminals.</p>
+
+<h2>Status</h2>
+
+<p>Early, and honestly so. As of today the daemon runs, owns PTYs,
+and speaks both planes; <code>tw new</code>, <code>ls</code>,
+<code>attach</code>, and <code>kill</code> work; sessions survive
+detach and reattach with full state; Ghostty's VT engine is linked
+into the daemon and parsing escape sequences in tests. Shells
+survive their windows. That is the foundation — workspaces,
+runtime-side scrollback replay, the browser client, and the agent
+API are the road ahead, in roughly that order. The
+<a href="architecture.html">architecture page</a> has the concrete
+details, protocol formats, and build instructions.</p>
+
+<h2 id="faq">FAQ</h2>
+
+<dl>
+  <dt>Isn't this just tmux with extra steps?</dt>
+  <dd>tmux is a terminal emulator inside your terminal that solved
+  persistence in the only place it could — inside the byte stream.
+  TermWire moves persistence below the emulator and management
+  outside the stream entirely. No prefix key, no in-band status
+  line, no scrollback fights: your terminal stays a terminal, and
+  the control plane is a real API.</dd>
+
+  <dt>Why not extend tmux's control mode instead?</dt>
+  <dd>Control mode was the right instinct trapped in the wrong
+  channel — a structured protocol spoken through a tty. Building on
+  it means inheriting the tunnel. The honest fix is a daemon that
+  owns the resource and exposes a real socket.</dd>
+
+  <dt>Doesn't systemd-logind already track sessions?</dt>
+  <dd>logind tracks <em>login</em> sessions — seats, users, access
+  control. It has no concept of what is inside your terminals, and
+  it should not. TermWire sits above logind the way PipeWire does:
+  a per-user runtime for one class of resource. (The name of this
+  page's design inspiration is not a coincidence; the architectural
+  inspiration is real too.)</dd>
+
+  <dt>What happens when the daemon crashes?</dt>
+  <dd>Today: your sessions die with it, which is exactly as bad as
+  every terminal emulator crash ever, minus the window. The honest
+  mitigations are a deliberately small daemon, a minimal data path,
+  and — later — state serialization so a restarted daemon can
+  reconstruct what it can. We would rather keep the daemon boring
+  than promise magic.</dd>
+
+  <dt>Why Zig, and why vendor Ghostty?</dt>
+  <dd>Terminal emulation is the one component you must not get
+  subtly wrong, and Ghostty's VT engine is battle-tested and being
+  extracted as <code>libghostty-vt</code> — which is a Zig module.
+  Consuming it natively, in the language it is written in, gives us
+  a production-grade terminal core on day one of a young
+  project.</dd>
+
+  <dt>Is this a terminal emulator?</dt>
+  <dd>No. It is the layer terminal emulators will sit on top of.
+  The best outcome is that your favorite emulator adds a TermWire
+  attach mode and you never think about ownership again — the same
+  way your music player never thinks about
+  <code>/dev/dsp</code>.</dd>
+</dl>
+
+</main>
+
+<footer class="site-footer">
+  <p>TermWire — <a href="https://github.com/toppk/termwire">github.com/toppk/termwire</a></p>
+  <p>Design is an homage to <a href="https://0pointer.net/blog/">pid
+  eins</a>; the essay structure owes an obvious debt to
+  <a href="http://0pointer.de/blog/projects/systemd.html">Rethinking
+  PID 1</a>.</p>
+</footer>
+
+</body>
+</html>

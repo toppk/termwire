@@ -14,3 +14,7 @@ pub fn main(init: std.process.Init) !void {
     try stdout.print("termwired {s} (protocol v{d})\n", .{ version, protocol.version });
     try stdout.flush();
 }
+
+test {
+    _ = @import("vt.zig");
+}

@@ -323,8 +323,10 @@ fn findSessionClient(self: *Daemon, fd: posix.fd_t) ?ClientLoc {
     return null;
 }
 
-fn createSession(self: *Daemon, cols: u16, rows: u16) !protocol.SessionInfo {
+fn createSession(self: *Daemon, cols_req: u16, rows_req: u16) !protocol.SessionInfo {
     const id = self.next_id;
+    const cols = if (cols_req == 0) 80 else cols_req;
+    const rows = if (rows_req == 0) 24 else rows_req;
 
     var sess: Session = .{
         .id = id,

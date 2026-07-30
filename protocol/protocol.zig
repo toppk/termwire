@@ -88,6 +88,34 @@ pub fn sessionSocketPath(buf: []u8, id: u32) ![]const u8 {
     return std.fmt.bufPrint(buf, "{s}/session-{d}.sock", .{ dir, id });
 }
 
+/// Connect a blocking, CLOEXEC stream socket to a Unix socket path.
+pub fn connectUnix(path: []const u8) !std.posix.fd_t {
+    const posix = std.posix;
+    if (path.len >= 107) return error.PathTooLong;
+
+    const fd = std.c.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
+    if (fd < 0) return error.SocketFailed;
+    errdefer _ = std.c.close(fd);
+
+    var addr: posix.sockaddr.un = .{ .path = undefined };
+    @memset(&addr.path, 0);
+    @memcpy(addr.path[0..path.len], path);
+    if (std.c.connect(fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un)) < 0)
+        return error.ConnectFailed;
+    return fd;
+}
+
+/// send() the whole buffer, suppressing SIGPIPE. Returns false on error.
+pub fn sendAll(fd: std.posix.fd_t, bytes: []const u8) bool {
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const n = std.c.send(fd, bytes[off..].ptr, bytes.len - off, std.posix.MSG.NOSIGNAL);
+        if (n < 0) return false;
+        off += @intCast(n);
+    }
+    return true;
+}
+
 test "request round-trips through JSON" {
     const alloc = std.testing.allocator;
     const req: Request = .{ .op = .create_session, .cols = 120, .rows = 40 };

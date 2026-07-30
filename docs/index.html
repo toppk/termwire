@@ -85,21 +85,40 @@ what.</p>
 
 <h2>A Lesson from ZFS</h2>
 
-<p>When ZFS merged the volume manager and the filesystem, kernel
-developers famously dismissed it as a <em>rampant layering
-violation</em>. The layers were sacred: block devices below,
-filesystems above, and never shall information cross. Jeff Bonwick's
-answer was that layering is a tool, not a commandment — and that the
-traditional boundary hid exactly the information both sides needed.
-The filesystem knew which blocks mattered; the volume manager knew
-which disks were healthy; the interface between them made both
-ignorant. Move the boundary, and suddenly end-to-end checksums,
-self-healing mirrors, and O(live data) resilvering fall out almost
-for free.</p>
+<p>In June 2006, in an LKML thread about ext3, Andrew Morton called
+ZFS "a rampant layering violation" for combining the filesystem,
+volume manager, and RAID controller in one design. Jeff Bonwick's
+response, a year later, is one of the great short essays in systems
+design. "I suppose it depends what the meaning of the word violate
+is," he wrote:</p>
+
+<blockquote><p>While designing ZFS we observed that the standard
+layering of the storage stack induces a surprising amount of
+unnecessary complexity and duplicated logic. We found that by
+refactoring the problem a bit — that is, changing where the
+boundaries are between layers — we could make the whole thing much
+simpler.</p></blockquote>
+
+<p>His analysis is worth reading in the original: any storage stack
+is a series of translations from one naming scheme to another —
+filename to object, object to volume LBA, volume LBA to array LBA,
+array LBA to disk. And the volume LBA in the middle, he observed,
+is completely useless: "in effect we're translating from English to
+French to German when we could just as easily translate from
+English to German directly. The intermediate French has no
+intrinsic value." So ZFS <em>telescoped</em> the stack — collapsed
+the adjacent translations that only existed to undo each other —
+and an entire layer of metadata vanished, along with the hardware
+RAID controller. Filesystem, volume management, RAID, snapshots,
+compression: 80,000 lines. "I certainly don't feel violated," he
+closed. "Do you?"</p>
 
 <p>History sided with ZFS. The lesson was not "layers are bad" — the
 lesson was that <em>an abstraction boundary drawn in the wrong place
-taxes everything built on top of it.</em></p>
+taxes everything built on top of it</em>, and the tax is paid in
+duplicated logic and layers of translation that exist only to feed
+each other. Keep that phrase — the intermediate French — in mind for
+a moment.</p>
 
 <p>The boundary between shell, PTY, and terminal emulator was drawn
 in the early eighties, for hardware terminals on serial lines. It
@@ -154,9 +173,21 @@ people run a terminal emulator inside their terminal emulator just so
 their shells can outlive their windows. Users have been routing
 around this bug for almost forty years.</p>
 
-<p>But a multiplexer lives in the only place it can: inside the byte
-stream. And that location dictates everything painful about it. Its
-control plane is tunneled through the terminal protocol itself —
+<p>But look at what a multiplexer has to <em>be</em> to do its job,
+and you find Bonwick's intermediate French. tmux is a full terminal
+emulator: it parses your application's VT bytes into an internal
+screen, then re-encodes that screen back into VT bytes for the
+outer emulator to parse all over again. Two complete terminal
+emulations, the middle one existing only to serialize into the same
+protocol it just finished parsing — a translation with no intrinsic
+value, done on every byte your build prints. That is the telescoping
+opportunity: let the runtime that owns the PTY parse the stream
+once, and let every view render from that one canonical screen.</p>
+
+<p>And the multiplexer lives in the only place it can: inside the
+byte stream. That location dictates everything else painful about
+it. Its control plane is tunneled through the terminal protocol
+itself —
 prefix keys the applications underneath must not see, a status line
 drawn in-band, copy-mode fighting your emulator's native selection,
 scrollback double-buffered in two places that disagree, nested

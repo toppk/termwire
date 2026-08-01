@@ -307,14 +307,18 @@ terminals.</p>
 
 <h2>Status</h2>
 
-<p>Early, and honestly so. As of today the daemon runs, owns PTYs,
-and speaks both planes; <code>tw new</code>, <code>ls</code>,
+<p>Early, and honestly so. As of this writing the daemon runs, owns
+PTYs, and speaks both planes; <code>tw new</code>, <code>ls</code>,
 <code>attach</code>, and <code>kill</code> work; sessions survive
-detach and reattach with full state; Ghostty's VT engine is linked
-into the daemon and parsing escape sequences in tests. Shells
-survive their windows. That is the foundation — workspaces,
-runtime-side scrollback replay, the browser client, and the agent
-API are the road ahead, in roughly that order. The
+detach and reattach with full state; and the first non-CLI view
+exists — a browser client (Vue + xterm.js, bridged by a separate
+<code>termwire-webd</code> process) that lists sessions and attaches
+to them, proving the views-are-interchangeable claim: the same shell
+can be picked up from a terminal or a browser tab. Ghostty's VT
+engine is linked into the daemon and parsing escape sequences in
+tests. That is the foundation — runtime-side scrollback replay,
+workspaces, a native desktop client, and the agent API are the road
+ahead, in roughly that order. The
 <a href="architecture.html">architecture page</a> has the concrete
 details, protocol formats, and build instructions.</p>
 

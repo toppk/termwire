@@ -69,7 +69,8 @@ lifetime belongs to the runtime alone.</p>
   <tr><td><code>daemon/</code></td><td><code>termwired</code> — the runtime: a single-threaded poll loop owning all sessions, both socket planes, and the VT state</td></tr>
   <tr><td><code>protocol/</code></td><td>wire-format types and socket helpers shared by daemon and clients</td></tr>
   <tr><td><code>cli/</code></td><td><code>tw</code> — CLI client: <code>new</code>, <code>ls</code>, <code>attach</code>, <code>kill</code></td></tr>
-  <tr><td><code>web/</code></td><td>browser client (xterm.js) — next milestone</td></tr>
+  <tr><td><code>webd/</code></td><td><code>termwire-webd</code> — web bridge: serves the built web client and bridges WebSockets to the daemon's Unix sockets</td></tr>
+  <tr><td><code>web/</code></td><td>browser client: Vue 3 + Motion + xterm.js, built with Vite</td></tr>
   <tr><td><code>third_party/ghostty</code></td><td>vendored Ghostty; the daemon imports its <code>ghostty-vt</code> Zig module (libghostty-vt) for terminal emulation</td></tr>
   <tr><td><code>third_party/xterm.js</code></td><td>vendored xterm.js 6.0.0 for the browser client</td></tr>
 </table>
@@ -137,6 +138,35 @@ stream, unframed. Multiple clients may be attached; today all of
 them receive output and all of them may write (the one-controller
 lease is on the roadmap, not in the code).</p>
 
+<h2>The web stack</h2>
+
+<p>The browser client is deliberately <em>not</em> inside the daemon.
+<code>termwire-webd</code> is a separate binary that serves the built
+web UI and translates between WebSockets and the daemon's Unix
+sockets; the daemon never learns HTTP, and the browser never learns
+Unix sockets. Kill the bridge and every session keeps running —
+which is the whole point.</p>
+
+<pre><code>browser (Vue + xterm.js)
+   │  ws://127.0.0.1:7181/ws/control      JSON, one per text frame
+   │  ws://127.0.0.1:7181/ws/session/{id} binary in/out
+   ▼
+termwire-webd ── unix sockets ──► termwired</code></pre>
+
+<table>
+  <tr><th>endpoint</th><th>behavior</th></tr>
+  <tr><td><code>GET /</code></td><td>the web client (static files from <code>--root</code>, default <code>web/dist</code>)</td></tr>
+  <tr><td><code>/ws/control</code></td><td>each text frame is one control request; each response line comes back as one text frame</td></tr>
+  <tr><td><code>/ws/session/{id}</code></td><td>binary frames in = raw keyboard bytes; text frames in = <code>{"resize":{"cols":N,"rows":N}}</code>; binary frames out = raw PTY output. The bridge builds the data-plane framing, so the browser stays protocol-ignorant.</td></tr>
+</table>
+
+<p>The client itself is Vue 3 with Motion for animation and xterm.js
+(pinned to the same 6.0.0 as <code>third_party/xterm.js</code>) for
+rendering: a session sidebar with live sizes and ages, create/kill,
+and a terminal pane that follows the browser layout and syncs the
+PTY size on attach and resize. <code>termwire-webd</code> binds
+127.0.0.1 only and has no authentication yet — do not expose it.</p>
+
 <h2>The VT engine</h2>
 
 <p>The daemon links Ghostty's terminal core, consumed as the
@@ -164,6 +194,11 @@ $ git submodule update --init --depth 1
 $ zig build
 $ zig build test</code></pre>
 
+<p>The web client additionally needs node/npm, only at build time:</p>
+
+<pre><code>$ cd web &amp;&amp; npm install &amp;&amp; npm run build &amp;&amp; cd ..
+$ zig-out/bin/termwire-webd        # http://127.0.0.1:7181</code></pre>
+
 <p>Try it:</p>
 
 <pre><code>$ zig-out/bin/termwired            # terminal 1: the runtime
@@ -180,11 +215,14 @@ polo</code></pre>
 <h2>Honest limitations, today</h2>
 
 <ul>
-  <li>No scrollback replay yet — reattaching shows new output only.</li>
+  <li>No scrollback replay yet — reattaching (CLI or browser) shows
+  new output only.</li>
   <li>No backpressure: a stuck client can stall the loop on write.</li>
   <li>No single-instance lock; a second daemon stomps the first's
   control socket.</li>
   <li>No controller lease: every attached client can type.</li>
+  <li>No authentication on the web bridge; it binds localhost
+  only.</li>
   <li>Daemon crash takes sessions with it (see the
   <a href="index.html#faq">manifesto FAQ</a>).</li>
 </ul>
@@ -195,13 +233,15 @@ polo</code></pre>
   <li><strong>Done:</strong> runtime daemon, PTY ownership, control
   plane, data plane, CLI attach/detach, ghostty-vt linked and
   tested.</li>
-  <li><strong>Next:</strong> browser client — WebSocket bridge in
-  the daemon, xterm.js view in <code>web/</code>.</li>
-  <li>Runtime-owned scrollback and screen-state replay on
-  attach.</li>
+  <li><strong>Done:</strong> browser client — <code>termwire-webd</code>
+  bridge plus the Vue/xterm.js UI in <code>web/</code>.</li>
+  <li><strong>Next:</strong> runtime-owned scrollback and
+  screen-state replay on attach, via the ghostty-vt Terminal.</li>
   <li>Workspace model; read-only observers; controller leases.</li>
-  <li>Native desktop client, mobile, collaboration, and the agent
-  API.</li>
+  <li>Native desktop client — informed by the web client, and
+  likely thinner: less an emulator, more a window manager for
+  sessions ("bring this terminal to the foreground").</li>
+  <li>Mobile, collaboration, and the agent API.</li>
 </ol>
 
 </main>

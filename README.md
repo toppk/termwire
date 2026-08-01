@@ -83,7 +83,7 @@ The high-level plan for the project, in order:
 |  1  | Session runtime owning PTYs, control + data planes       |   ✅   |
 |  2  | CLI client (`tw`) with detach/reattach                   |   ✅   |
 |  3  | Ghostty's VT engine (`libghostty-vt`) linked as terminal core | ✅ |
-|  4  | Browser client (WebSocket + vendored xterm.js)           |   ❌   |
+|  4  | Browser client (`termwire-webd` bridge + Vue/xterm.js)   |   ✅   |
 |  5  | Runtime-owned scrollback and replay on attach            |   ❌   |
 |  6  | Workspace model, read-only observers, controller leases  |   ❌   |
 |  7  | Native desktop client, mobile, collaboration             |   ❌   |
@@ -116,6 +116,18 @@ a production-grade VT engine rather than a reimplementation. The
 wiring is proven in tests today; runtime-owned screen state and
 scrollback (step 5) build on it.
 
+#### Web Client
+
+`termwire-webd` is a separate bridge process — the daemon never
+learns HTTP. It serves the built UI and translates WebSockets to the
+daemon's Unix sockets (`/ws/control`, `/ws/session/<id>`). The UI is
+Vue 3 with Motion for animation and xterm.js (same 6.0.0 as the
+vendored pin): a live session sidebar with create/kill, and a
+terminal pane that follows the browser layout and keeps the PTY size
+in sync. Localhost only, no auth yet. Build it with
+`cd web && npm install && npm run build`, then run
+`zig-out/bin/termwire-webd` and open <http://127.0.0.1:7181>.
+
 ## Vendored dependencies
 
 - `third_party/ghostty` — provides the `ghostty-vt` Zig module. Pinned
@@ -133,7 +145,8 @@ scrollback (step 5) build on it.
 daemon/       termwired — the per-user session runtime
 protocol/     wire-format types shared by daemon and clients
 cli/          tw — CLI client (new/ls/attach/kill)
-web/          browser client (xterm.js) — next milestone
+webd/         termwire-webd — web bridge (static files + WebSocket)
+web/          browser client (Vue 3 + Motion + xterm.js)
 docs/         documentation site (GitHub Pages)
 third_party/  vendored dependencies (git submodules)
 ```

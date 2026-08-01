@@ -34,6 +34,8 @@ pub const SessionInfo = struct {
     pid: i32,
     cols: u16,
     rows: u16,
+    /// Unix timestamp of session creation.
+    created_unix: i64 = 0,
     /// Path of the session's data-plane socket.
     socket_path: []const u8,
 };

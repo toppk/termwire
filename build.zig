@@ -52,13 +52,29 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(cli_exe);
 
+    const webd_mod = b.createModule(.{
+        .root_source_file = b.path("webd/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "protocol", .module = protocol_mod },
+        },
+    });
+
+    const webd_exe = b.addExecutable(.{
+        .name = "termwire-webd",
+        .root_module = webd_mod,
+    });
+    b.installArtifact(webd_exe);
+
     const run_step = b.step("run", "Run the daemon");
     const run_cmd = b.addRunArtifact(daemon_exe);
     if (b.args) |args| run_cmd.addArgs(args);
     run_step.dependOn(&run_cmd.step);
 
     const test_step = b.step("test", "Run all tests");
-    inline for (.{ daemon_mod, protocol_mod, cli_mod }) |mod| {
+    inline for (.{ daemon_mod, protocol_mod, cli_mod, webd_mod }) |mod| {
         const t = b.addTest(.{ .root_module = mod });
         test_step.dependOn(&b.addRunArtifact(t).step);
     }

@@ -36,11 +36,14 @@ const Client = struct {
     len: usize = 0,
 };
 
+extern "c" fn time(tloc: ?*i64) i64;
+
 const Session = struct {
     id: u32,
     pty: Pty,
     cols: u16,
     rows: u16,
+    created_unix: i64 = 0,
     data_listen_fd: posix.fd_t,
     sock_path_buf: [108]u8 = undefined,
     sock_path_len: usize = 0,
@@ -292,6 +295,7 @@ fn sessionInfo(sess: *const Session) protocol.SessionInfo {
         .pid = sess.pty.pid,
         .cols = sess.cols,
         .rows = sess.rows,
+        .created_unix = sess.created_unix,
         .socket_path = sess.sockPath(),
     };
 }
@@ -332,6 +336,7 @@ fn createSession(self: *Daemon, cols_req: u16, rows_req: u16) !protocol.SessionI
         .id = id,
         .cols = cols,
         .rows = rows,
+        .created_unix = time(null),
         .pty = undefined,
         .data_listen_fd = -1,
     };

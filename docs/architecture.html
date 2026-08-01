@@ -228,11 +228,12 @@ $ git submodule update --init --depth 1
 $ zig build
 $ zig build test</code></pre>
 
-<p>Every task is a <code>zig build</code> step (<code>zig build
---help</code> lists them). The web client additionally needs
-node/npm, only at build time:</p>
+<p>Day-to-day tasks go through <code>just</code> (bare
+<code>just</code> lists the recipes; each echoes the commands it
+runs, and build-graph work delegates to <code>zig build</code>). The
+web client additionally needs node/npm, only at build time:</p>
 
-<pre><code>$ zig build serve                  # npm build + bridge on http://127.0.0.1:7181</code></pre>
+<pre><code>$ just serve                       # npm build + bridge on http://127.0.0.1:7181</code></pre>
 
 <p>Try it:</p>
 
@@ -255,7 +256,9 @@ polo</code></pre>
   <li>No backpressure: a stuck client can stall the loop on write.</li>
   <li>No single-instance lock; a second daemon stomps the first's
   control socket.</li>
-  <li>No controller lease: every attached client can type.</li>
+  <li>No controller lease: every attached client can type, and every
+  client's resize is applied — with two differently-sized views on
+  one session, the last resize wins.</li>
   <li>No authentication on the web bridge; it binds localhost
   only.</li>
   <li>Daemon crash takes sessions with it (see the

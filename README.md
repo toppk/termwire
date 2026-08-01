@@ -62,20 +62,22 @@ zig build
 zig build test
 ```
 
-Try it:
+Day-to-day tasks go through [`just`](https://github.com/casey/just)
+(`just` with no arguments lists every recipe, and recipes echo the
+commands they run):
 
 ```shell-session
-zig build run              # terminal 1: run the daemon
-zig-out/bin/tw new         # terminal 2: create a session and attach
+just run                   # terminal 1: run the daemon
+just new                   # terminal 2: create a session and attach
                            #   ... work, then Ctrl-\ to detach ...
-zig-out/bin/tw ls          # sessions survive their windows
-zig-out/bin/tw attach 1    # pick up exactly where you left off
-zig build serve            # terminal 3: web client on 127.0.0.1:7181
+just ls                    # sessions survive their windows
+just attach 1              # pick up exactly where you left off
+just serve                 # terminal 3: web client on 127.0.0.1:7181
 ```
 
-Every task is a `zig build` step — `zig build --help` lists them
-(`run`, `test`, `web`, `serve`, `fmt`). The `web`/`serve` steps are
-the only ones that need node/npm.
+Build-graph work stays in `zig build` (which the recipes delegate
+to); `just web` / `just serve` are the only recipes needing
+node/npm.
 
 ## Roadmap and Status
 

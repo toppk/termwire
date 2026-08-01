@@ -62,6 +62,33 @@ held by the runtime instead of by a window. Clients are
 interchangeable views that attach and detach at will; the session's
 lifetime belongs to the runtime alone.</p>
 
+<h2>Terminology</h2>
+
+<p>The traditional stack had comfortable names — terminal emulator,
+multiplexer, shell — that stop describing anything precisely once
+the ownership moves. Email solved this with role names (MUA, MTA,
+MDA) rather than program names, and that is the right instinct:
+these are <em>roles</em>, and one program may play several.</p>
+
+<table>
+  <tr><th>term</th><th>role</th></tr>
+  <tr><td><strong>application</strong></td><td>what runs on the PTY slave side and believes it owns a terminal: bash, vim, htop, ssh. (What people loosely call a "terminal app".)</td></tr>
+  <tr><td><strong>PTY</strong></td><td>the kernel pseudo-terminal pair, unchanged since the eighties.</td></tr>
+  <tr><td><strong>engine</strong></td><td>the VT interpreter that turns an output byte stream into screen state (ghostty-vt here). Every legacy emulator has one buried inside; TermWire hoists it into the runtime.</td></tr>
+  <tr><td><strong>session</strong></td><td>one PTY + its application + its canonical screen state and scrollback. The unit of persistence. Owned by the runtime, never by a window.</td></tr>
+  <tr><td><strong>runtime</strong></td><td><code>termwired</code>: the per-user daemon that owns every session. The PipeWire of this story.</td></tr>
+  <tr><td><strong>view</strong></td><td>anything that renders a session and gathers input for it: <code>tw</code> in an outer terminal, a browser tab, a native window, a phone. Views are disposable; sessions are not.</td></tr>
+  <tr><td><strong>controller / observer</strong></td><td>a view that may write to the session vs. one that only watches. (Today every view is a controller; the lease is on the roadmap.)</td></tr>
+  <tr><td><strong>bridge</strong></td><td>a protocol adapter between a view's transport and the runtime's sockets: <code>termwire-webd</code> for browsers; others may follow.</td></tr>
+  <tr><td><strong>workspace</strong></td><td>a semantic group of sessions belonging to one task (planned).</td></tr>
+</table>
+
+<p>In these terms, a classic terminal emulator is an engine and a
+view fused into one process that also owns the PTY; a multiplexer is
+a second engine wedged into the byte stream. Under TermWire, xterm
+or Ghostty can shed both jobs and be what they are best at: a
+view.</p>
+
 <h2>Components</h2>
 
 <table>
@@ -118,25 +145,34 @@ be further ops on this same plane.</p>
 
 <p>One Unix socket per session. Deliberately dumb — this is the path
 every output byte takes, so no JSON, no policy, no parsing beyond a
-5-byte frame header.</p>
-
-<p><strong>Client → daemon</strong> is framed:</p>
-
-<pre><code>offset  size  field
-0       1     type      0 = data, 1 = resize
-1       4     length    u32 little-endian payload length
-5       n     payload</code></pre>
+5-byte frame header (type byte + u32le payload length), used in both
+directions.</p>
 
 <table>
-  <tr><th>type</th><th>payload</th></tr>
-  <tr><td><code>data</code></td><td>keyboard/stdin bytes, written verbatim to the PTY (max 4096 per frame; chunk larger writes)</td></tr>
-  <tr><td><code>resize</code></td><td>4 bytes: cols u16le, rows u16le → <code>TIOCSWINSZ</code></td></tr>
+  <tr><th>type</th><th>direction</th><th>payload</th></tr>
+  <tr><td><code>data</code> (0)</td><td>client → daemon</td><td>keyboard/stdin bytes, written verbatim to the PTY (max 4096 per frame; chunk larger writes)</td></tr>
+  <tr><td><code>resize</code> (1)</td><td>client → daemon</td><td>4 bytes: cols u16le, rows u16le → <code>TIOCSWINSZ</code> and the runtime's terminal state</td></tr>
+  <tr><td><code>snapshot</code> (2)</td><td>daemon → client</td><td>sent once on attach: a VT byte sequence reconstructing the session's current screen — palette, modes, content, styles, cursor — generated from the runtime's canonical terminal state</td></tr>
+  <tr><td><code>output</code> (3)</td><td>daemon → client</td><td>raw PTY output</td></tr>
 </table>
 
-<p><strong>Daemon → client</strong> is the raw PTY output byte
-stream, unframed. Multiple clients may be attached; today all of
-them receive output and all of them may write (the one-controller
-lease is on the roadmap, not in the code).</p>
+<p><strong>Attach semantics.</strong> Every PTY byte flows through
+the runtime's VT engine before being broadcast, so the runtime
+always holds the canonical screen. On attach the daemon serializes
+that screen (using ghostty-vt's <code>TerminalFormatter</code>, VT
+format) into one snapshot frame, then streams output frames. The
+daemon is single-threaded, so the snapshot is atomic with respect to
+the stream: output that arrives during snapshot generation is
+applied and broadcast <em>after</em> it, and every attached view of
+a session sees the same bytes in the same order — views cannot
+drift. The snapshot payload is itself VT, so any VT-speaking view
+replays it with the parser it already has; a structured binary
+snapshot for state-aware views can be added as a new frame type
+without disturbing this one.</p>
+
+<p>Multiple clients may be attached; today all of them receive
+output and all of them may write (the one-controller lease is on the
+roadmap, not in the code).</p>
 
 <h2>The web stack</h2>
 
@@ -172,15 +208,13 @@ PTY size on attach and resize. <code>termwire-webd</code> binds
 <p>The daemon links Ghostty's terminal core, consumed as the
 <code>ghostty-vt</code> Zig module straight from the vendored tree —
 the same VT emulation Ghostty ships to its users, not a
-reimplementation. This is what will make the runtime the canonical
-owner of screen state and scrollback: bytes from the PTY flow
-through <code>ghostty.TerminalStream</code> into a
-<code>ghostty.Terminal</code> per session, and any client — a
-reattaching CLI, a browser tab, a phone — can be brought current
-from the runtime's copy instead of keeping its own. Today this
-wiring is proven in tests; hooking every session's output through it
-and replaying on attach is the next milestone after the browser
-client.</p>
+reimplementation. This is what makes the runtime the canonical owner
+of screen state: every session's PTY output flows through
+<code>ghostty.TerminalStream</code> into a per-session
+<code>ghostty.Terminal</code>, and attach snapshots are serialized
+from that state with ghostty's <code>TerminalFormatter</code>. Any
+client — a reattaching CLI, a browser tab, a phone — is brought
+current from the runtime's copy instead of keeping its own.</p>
 
 <h2>Building</h2>
 
@@ -216,8 +250,8 @@ polo</code></pre>
 <h2>Honest limitations, today</h2>
 
 <ul>
-  <li>No scrollback replay yet — reattaching (CLI or browser) shows
-  new output only.</li>
+  <li>Attach replays the current screen, not scrollback history —
+  that needs runtime-owned scrollback serialization.</li>
   <li>No backpressure: a stuck client can stall the loop on write.</li>
   <li>No single-instance lock; a second daemon stomps the first's
   control socket.</li>
@@ -236,8 +270,10 @@ polo</code></pre>
   tested.</li>
   <li><strong>Done:</strong> browser client — <code>termwire-webd</code>
   bridge plus the Vue/xterm.js UI in <code>web/</code>.</li>
-  <li><strong>Next:</strong> runtime-owned scrollback and
-  screen-state replay on attach, via the ghostty-vt Terminal.</li>
+  <li><strong>Done:</strong> runtime-owned screen state — every
+  session's output flows through a ghostty-vt Terminal in the
+  daemon, and attach replays a snapshot of it. <strong>Next:</strong>
+  extend the snapshot with scrollback history.</li>
   <li>Workspace model; read-only observers; controller leases.</li>
   <li>Native desktop client — informed by the web client, and
   likely thinner: less an emulator, more a window manager for

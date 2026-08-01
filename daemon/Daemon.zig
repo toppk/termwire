@@ -2,15 +2,17 @@
 //! session PTY, the control socket, and the per-session data sockets.
 //!
 //! Control plane: newline-delimited JSON (see protocol.Request/Response).
-//! Data plane: framed client->daemon input, raw daemon->client output.
+//! Data plane: framed both ways — client sends data/resize, daemon
+//! sends one snapshot on attach (VT reconstruction of the session's
+//! canonical screen, maintained by ghostty-vt) followed by output.
 //!
 //! Known simplifications at this stage (deliberate, revisit later):
 //! - A slow/stuck data client can block the loop on send(); no
 //!   backpressure handling yet.
 //! - No single-instance lock; a second daemon stomps the first's
 //!   control socket.
-//! - PTY output goes only to currently-attached clients; scrollback
-//!   replay is a later chore.
+//! - Snapshots cover the screen, not scrollback history; that comes
+//!   with runtime-owned scrollback.
 
 const Daemon = @This();
 
@@ -18,7 +20,9 @@ const std = @import("std");
 const posix = std.posix;
 const c = std.c;
 const protocol = @import("protocol");
+const ghostty = @import("ghostty-vt");
 const Pty = @import("Pty.zig");
+const vt_mod = @import("vt.zig");
 
 const log = std.log.scoped(.daemon);
 
@@ -38,12 +42,22 @@ const Client = struct {
 
 extern "c" fn time(tloc: ?*i64) i64;
 
+/// Canonical VT state for a session: PTY output flows through the
+/// stream into the terminal, which is what snapshots are taken from.
+/// Heap-allocated because the stream handler holds a pointer to the
+/// terminal — Session structs move when the sessions list reallocates.
+const Vt = struct {
+    term: ghostty.Terminal,
+    stream: ghostty.TerminalStream,
+};
+
 const Session = struct {
     id: u32,
     pty: Pty,
     cols: u16,
     rows: u16,
     created_unix: i64 = 0,
+    vt: *Vt,
     data_listen_fd: posix.fd_t,
     sock_path_buf: [108]u8 = undefined,
     sock_path_len: usize = 0,
@@ -61,6 +75,7 @@ fn handleStop(_: posix.SIG) callconv(.c) void {
 }
 
 alloc: std.mem.Allocator,
+io: std.Io,
 control_fd: posix.fd_t = -1,
 control_path_buf: [108]u8 = undefined,
 control_path_len: usize = 0,
@@ -68,8 +83,8 @@ sessions: std.ArrayList(Session) = .empty,
 conns: std.ArrayList(Conn) = .empty,
 next_id: u32 = 1,
 
-pub fn run(alloc: std.mem.Allocator) !void {
-    var self: Daemon = .{ .alloc = alloc };
+pub fn run(alloc: std.mem.Allocator, io: std.Io) !void {
+    var self: Daemon = .{ .alloc = alloc, .io = io };
     defer self.deinit();
 
     try self.bindControlSocket();
@@ -332,6 +347,16 @@ fn createSession(self: *Daemon, cols_req: u16, rows_req: u16) !protocol.SessionI
     const cols = if (cols_req == 0) 80 else cols_req;
     const rows = if (rows_req == 0) 24 else rows_req;
 
+    const vt = try self.alloc.create(Vt);
+    errdefer self.alloc.destroy(vt);
+    vt.term = try ghostty.Terminal.init(self.io, self.alloc, .{
+        .cols = cols,
+        .rows = rows,
+    });
+    errdefer vt.term.deinit(self.alloc);
+    vt.stream = .initAlloc(self.alloc, .init(&vt.term));
+    errdefer vt.stream.deinit();
+
     var sess: Session = .{
         .id = id,
         .cols = cols,
@@ -339,6 +364,7 @@ fn createSession(self: *Daemon, cols_req: u16, rows_req: u16) !protocol.SessionI
         .created_unix = time(null),
         .pty = undefined,
         .data_listen_fd = -1,
+        .vt = vt,
     };
 
     const path = try protocol.sessionSocketPath(&sess.sock_path_buf, id);
@@ -375,6 +401,9 @@ fn destroySession(self: *Daemon, idx: usize) void {
         _ = sess.pty.wait(true);
     }
     sess.pty.deinit();
+    sess.vt.stream.deinit();
+    sess.vt.term.deinit(self.alloc);
+    self.alloc.destroy(sess.vt);
     _ = self.sessions.swapRemove(idx);
 }
 
@@ -392,6 +421,13 @@ fn reapSessions(self: *Daemon) void {
 
 // -- Data plane ------------------------------------------------------
 
+fn sendFrame(fd: posix.fd_t, frame_type: protocol.FrameType, payload: []const u8) bool {
+    var header: [protocol.frame_header_len]u8 = undefined;
+    protocol.writeFrameHeader(&header, frame_type, @intCast(payload.len));
+    if (!sendAll(fd, &header)) return false;
+    return sendAll(fd, payload);
+}
+
 fn acceptDataClient(self: *Daemon, idx: usize) void {
     const sess = &self.sessions.items[idx];
     const fd = c.accept4(sess.data_listen_fd, null, null, posix.SOCK.CLOEXEC);
@@ -400,6 +436,17 @@ fn acceptDataClient(self: *Daemon, idx: usize) void {
         _ = c.close(fd);
         return;
     };
+
+    // Bring the new client current with one snapshot frame. The loop
+    // is single-threaded, so this is atomic with respect to output:
+    // everything after this point reaches the client as output frames.
+    var out: std.Io.Writer.Allocating = .init(self.alloc);
+    defer out.deinit();
+    if (vt_mod.writeSnapshot(&sess.vt.term, &out.writer)) {
+        _ = sendFrame(fd, .snapshot, out.writer.buffered());
+    } else |err| {
+        log.warn("session {d}: snapshot failed: {t}", .{ sess.id, err });
+    }
     log.info("session {d}: client attached", .{sess.id});
 }
 
@@ -410,7 +457,8 @@ fn dropDataClient(self: *Daemon, sidx: usize, cidx: usize) void {
     log.info("session {d}: client detached", .{sess.id});
 }
 
-/// PTY produced output: broadcast raw bytes to all attached clients.
+/// PTY produced output: apply it to the session's canonical terminal
+/// state, then broadcast it to attached clients as output frames.
 fn serviceMaster(self: *Daemon, idx: usize, revents: i16) void {
     var buf: [4096]u8 = undefined;
     if (revents & (posix.POLL.IN | posix.POLL.HUP) != 0) {
@@ -421,10 +469,11 @@ fn serviceMaster(self: *Daemon, idx: usize, revents: i16) void {
             return;
         }
         const sess = &self.sessions.items[idx];
+        sess.vt.stream.nextSlice(buf[0..n]);
         var ci: usize = sess.clients.items.len;
         while (ci > 0) {
             ci -= 1;
-            if (!sendAll(sess.clients.items[ci].fd, buf[0..n]))
+            if (!sendFrame(sess.clients.items[ci].fd, .output, buf[0..n]))
                 self.dropDataClient(idx, ci);
         }
     }
@@ -480,6 +529,12 @@ fn serviceDataClient(self: *Daemon, sidx: usize, cidx: usize, revents: i16) void
                         .xpixel = 0,
                         .ypixel = 0,
                     }) catch {};
+                    sess.vt.term.resize(self.alloc, .{
+                        .cols = sess.cols,
+                        .rows = sess.rows,
+                    }) catch |err| {
+                        log.warn("session {d}: vt resize failed: {t}", .{ sess.id, err });
+                    };
                 }
             },
             else => {

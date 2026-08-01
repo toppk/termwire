@@ -155,6 +155,7 @@ fn sendData(fd: posix.fd_t, bytes: []const u8) bool {
 
 fn attach(arena: std.mem.Allocator, id: u32, socket_path: []const u8) !void {
     _ = arena;
+    const alloc = std.heap.smp_allocator;
     const stdin_fd = posix.STDIN_FILENO;
     const stdout_fd = posix.STDOUT_FILENO;
 
@@ -192,6 +193,8 @@ fn attach(arena: std.mem.Allocator, id: u32, socket_path: []const u8) !void {
     sendResize(sock, getWinsize(stdin_fd));
 
     var buf: [4096]u8 = undefined;
+    var acc: std.ArrayList(u8) = .empty;
+    defer acc.deinit(alloc);
     var fds = [_]posix.pollfd{
         .{ .fd = stdin_fd, .events = posix.POLL.IN, .revents = 0 },
         .{ .fd = sock, .events = posix.POLL.IN, .revents = 0 },
@@ -217,16 +220,40 @@ fn attach(arena: std.mem.Allocator, id: u32, socket_path: []const u8) !void {
             if (!sendData(sock, buf[0..n])) break :pump;
         }
 
-        // Session output -> local terminal (raw).
+        // Session output -> local terminal. The daemon frames its
+        // stream: one snapshot on attach, then output frames; both
+        // payloads are VT bytes for our outer terminal.
         if (fds[1].revents & (posix.POLL.IN | posix.POLL.HUP) != 0) {
             const n = posix.read(sock, &buf) catch break :pump;
             if (n == 0) break :pump;
-            var off: usize = 0;
-            while (off < n) {
-                const w = c.write(stdout_fd, buf[off..].ptr, n - off);
-                if (w < 0) break :pump;
-                off += @intCast(w);
+            acc.appendSlice(alloc, buf[0..n]) catch break :pump;
+
+            var start: usize = 0;
+            while (acc.items.len - start >= protocol.frame_header_len) {
+                const header = acc.items[start..][0..protocol.frame_header_len];
+                const payload_len = std.mem.readInt(u32, header[1..5], .little);
+                if (payload_len > protocol.max_downstream_frame) break :pump;
+                const total = protocol.frame_header_len + payload_len;
+                if (acc.items.len - start < total) break;
+                const payload = acc.items[start + protocol.frame_header_len ..][0..payload_len];
+
+                switch (header[0]) {
+                    @intFromEnum(protocol.FrameType.snapshot),
+                    @intFromEnum(protocol.FrameType.output),
+                    => {
+                        var off: usize = 0;
+                        while (off < payload.len) {
+                            const w = c.write(stdout_fd, payload[off..].ptr, payload.len - off);
+                            if (w < 0) break :pump;
+                            off += @intCast(w);
+                        }
+                    },
+                    else => {},
+                }
+                start += total;
             }
+            std.mem.copyForwards(u8, acc.items, acc.items[start..]);
+            acc.shrinkRetainingCapacity(acc.items.len - start);
         }
 
         if (fds[0].revents & (posix.POLL.HUP | posix.POLL.ERR) != 0) break;

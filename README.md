@@ -89,7 +89,8 @@ The high-level plan for the project, in order:
 |  2  | CLI client (`tw`) with detach/reattach                   |   ✅   |
 |  3  | Ghostty's VT engine (`libghostty-vt`) linked as terminal core | ✅ |
 |  4  | Browser client (`termwire-webd` bridge + Vue/xterm.js)   |   ✅   |
-|  5  | Runtime-owned scrollback and replay on attach            |   ❌   |
+|  5  | Runtime-owned screen state, snapshot replay on attach    |   ✅   |
+| 5b  | Scrollback history in the runtime                        |   ❌   |
 |  6  | Workspace model, read-only observers, controller leases  |   ❌   |
 |  7  | Native desktop client, mobile, collaboration             |   ❌   |
 |  8  | AI agents as first-class, user-approved participants     |   ❌   |
@@ -117,9 +118,12 @@ htop behave exactly as they would in a plain terminal.
 
 The daemon consumes Ghostty's terminal emulation as the `ghostty-vt`
 Zig module (libghostty-vt), imported directly from the vendored tree —
-a production-grade VT engine rather than a reimplementation. The
-wiring is proven in tests today; runtime-owned screen state and
-scrollback (step 5) build on it.
+a production-grade VT engine rather than a reimplementation. Every
+session's output flows through it, making the runtime the canonical
+owner of screen state: on attach, clients receive a snapshot frame
+(serialized with ghostty's `TerminalFormatter`) that repaints the
+session's screen, then the live stream. Reattach from `tw` or the
+browser and your screen is simply *there*.
 
 #### Web Client
 

@@ -535,7 +535,37 @@ fn serviceUnix(self: *Server, idx: usize) void {
 
     switch (conn.kind) {
         .ws_session => {
-            if (!sendWsFrame(conn.fd, 0x2, buf[0..n])) self.closeConn(idx);
+            // The daemon frames its stream (snapshot, then output).
+            // Forward each payload as one binary WS message; both are
+            // VT bytes to the browser.
+            conn.line.appendSlice(self.alloc, buf[0..n]) catch {
+                self.closeConn(idx);
+                return;
+            };
+            var start: usize = 0;
+            while (conn.line.items.len - start >= protocol.frame_header_len) {
+                const header = conn.line.items[start..][0..protocol.frame_header_len];
+                const payload_len = std.mem.readInt(u32, header[1..5], .little);
+                if (payload_len > protocol.max_downstream_frame) {
+                    self.closeConn(idx);
+                    return;
+                }
+                const total = protocol.frame_header_len + payload_len;
+                if (conn.line.items.len - start < total) break;
+                const payload = conn.line.items[start + protocol.frame_header_len ..][0..payload_len];
+                switch (header[0]) {
+                    @intFromEnum(protocol.FrameType.snapshot),
+                    @intFromEnum(protocol.FrameType.output),
+                    => if (!sendWsFrame(conn.fd, 0x2, payload)) {
+                        self.closeConn(idx);
+                        return;
+                    },
+                    else => {},
+                }
+                start += total;
+            }
+            std.mem.copyForwards(u8, conn.line.items, conn.line.items[start..]);
+            conn.line.shrinkRetainingCapacity(conn.line.items.len - start);
         },
         .ws_control => {
             // Split into lines; one text frame per response line.

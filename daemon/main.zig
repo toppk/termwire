@@ -34,7 +34,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    return Daemon.run(std.heap.smp_allocator);
+    return Daemon.run(std.heap.smp_allocator, init.io);
 }
 
 test {

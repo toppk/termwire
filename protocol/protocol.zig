@@ -12,7 +12,7 @@
 
 const std = @import("std");
 
-pub const version: u32 = 0;
+pub const version: u32 = 1;
 
 pub const Op = enum {
     create_session,
@@ -50,19 +50,34 @@ pub const Response = struct {
     sessions: ?[]const SessionInfo = null,
 };
 
-/// Client -> daemon data-plane framing: a 5-byte header followed by
-/// `len` payload bytes.
+/// Data-plane framing, both directions: a 5-byte header (type byte +
+/// u32le payload length) followed by the payload.
+///
+/// On attach the daemon sends one `snapshot` frame — a VT byte
+/// sequence reconstructing the session's current screen state
+/// (palette, modes, content, cursor) — followed by `output` frames as
+/// the PTY produces bytes. The daemon is single-threaded, so the
+/// snapshot is atomic with respect to the output stream: every client
+/// sees the same snapshot point and the same events after it.
 pub const FrameType = enum(u8) {
-    /// Payload is keyboard/stdin bytes for the PTY.
+    /// client -> daemon: keyboard/stdin bytes for the PTY.
     data = 0,
-    /// Payload is 4 bytes: cols u16le, rows u16le.
+    /// client -> daemon: 4-byte payload, cols u16le then rows u16le.
     resize = 1,
+    /// daemon -> client: screen reconstruction, sent once on attach.
+    snapshot = 2,
+    /// daemon -> client: raw PTY output.
+    output = 3,
 };
 
 pub const frame_header_len = 5;
 
-/// Largest allowed frame payload. Clients must chunk larger writes.
+/// Largest allowed client -> daemon frame payload; clients must chunk
+/// larger writes. Daemon -> client frames (snapshots) may be larger.
 pub const max_frame_payload = 4096;
+
+/// Upper bound a client should accept for a daemon -> client frame.
+pub const max_downstream_frame = 16 * 1024 * 1024;
 
 pub fn writeFrameHeader(buf: *[frame_header_len]u8, ft: FrameType, len: u32) void {
     buf[0] = @intFromEnum(ft);

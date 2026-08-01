@@ -90,6 +90,51 @@ pub fn sessionSocketPath(buf: []u8, id: u32) ![]const u8 {
     return std.fmt.bufPrint(buf, "{s}/session-{d}.sock", .{ dir, id });
 }
 
+/// std.log backend for the TermWire daemons: the standard scoped
+/// output with a UTC timestamp prefix. Install from a root file with:
+///   pub const std_options: std.Options = .{ .logFn = protocol.logging.logFn };
+pub const logging = struct {
+    extern "c" fn time(tloc: ?*i64) i64;
+
+    pub fn logFn(
+        comptime level: std.log.Level,
+        comptime scope: @EnumLiteral(),
+        comptime format: []const u8,
+        args: anytype,
+    ) void {
+        const io = std.Options.debug_io;
+        const prev = io.swapCancelProtection(.blocked);
+        defer _ = io.swapCancelProtection(prev);
+        var buffer: [64]u8 = undefined;
+        const terminal = std.debug.lockStderr(&buffer).terminal();
+        defer std.debug.unlockStderr();
+        logInner(level, scope, format, args, terminal) catch {};
+    }
+
+    fn logInner(
+        comptime level: std.log.Level,
+        comptime scope: @EnumLiteral(),
+        comptime format: []const u8,
+        args: anytype,
+        terminal: std.Io.Terminal,
+    ) !void {
+        const now = time(null);
+        if (now > 0) {
+            const es: std.time.epoch.EpochSeconds = .{ .secs = @intCast(now) };
+            const yd = es.getEpochDay().calculateYearDay();
+            const md = yd.calculateMonthDay();
+            const ds = es.getDaySeconds();
+            terminal.setColor(.dim) catch {};
+            try terminal.writer.print("{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}Z ", .{
+                yd.year,                  md.month.numeric(),        md.day_index + 1,
+                ds.getHoursIntoDay(),     ds.getMinutesIntoHour(),   ds.getSecondsIntoMinute(),
+            });
+            terminal.setColor(.reset) catch {};
+        }
+        try std.log.defaultLogFileTerminal(level, scope, format, args, terminal);
+    }
+};
+
 /// Connect a blocking, CLOEXEC stream socket to a Unix socket path.
 pub fn connectUnix(path: []const u8) !std.posix.fd_t {
     const posix = std.posix;

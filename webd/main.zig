@@ -24,6 +24,8 @@ const protocol = @import("protocol");
 
 const log = std.log.scoped(.webd);
 
+pub const std_options: std.Options = .{ .logFn = protocol.logging.logFn };
+
 const default_port: u16 = 7181;
 const max_http_request = 16 * 1024;
 const max_ws_message = 1024 * 1024;
@@ -309,9 +311,10 @@ fn upgradeWs(self: *Server, idx: usize, target: []const u8, key: []const u8, con
 
     conn.kind = kind;
     conn.unix_fd = unix_fd;
+    // Log before compacting rbuf: `target` is a slice into it.
+    log.info("ws {s} open ({s})", .{ target, @tagName(kind) });
     std.mem.copyForwards(u8, conn.rbuf.items, conn.rbuf.items[consumed..]);
     conn.rbuf.shrinkRetainingCapacity(conn.rbuf.items.len - consumed);
-    log.info("ws {s} open ({s})", .{ target, @tagName(kind) });
 
     // Bytes after the handshake may already contain frames.
     return handleWs(self, idx);

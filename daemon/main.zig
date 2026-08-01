@@ -5,6 +5,8 @@ const Daemon = @import("Daemon.zig");
 
 const version = "0.0.0";
 
+pub const std_options: std.Options = .{ .logFn = protocol.logging.logFn };
+
 const usage =
     \\usage: termwired [command]
     \\

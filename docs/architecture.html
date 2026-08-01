@@ -194,10 +194,11 @@ $ git submodule update --init --depth 1
 $ zig build
 $ zig build test</code></pre>
 
-<p>The web client additionally needs node/npm, only at build time:</p>
+<p>Every task is a <code>zig build</code> step (<code>zig build
+--help</code> lists them). The web client additionally needs
+node/npm, only at build time:</p>
 
-<pre><code>$ cd web &amp;&amp; npm install &amp;&amp; npm run build &amp;&amp; cd ..
-$ zig-out/bin/termwire-webd        # http://127.0.0.1:7181</code></pre>
+<pre><code>$ zig build serve                  # npm build + bridge on http://127.0.0.1:7181</code></pre>
 
 <p>Try it:</p>
 

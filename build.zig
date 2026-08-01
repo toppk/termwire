@@ -68,10 +68,27 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(webd_exe);
 
-    const run_step = b.step("run", "Run the daemon");
+    const run_step = b.step("run", "Run the daemon (termwired)");
     const run_cmd = b.addRunArtifact(daemon_exe);
     if (b.args) |args| run_cmd.addArgs(args);
     run_step.dependOn(&run_cmd.step);
+
+    // Web client: npm is only needed for these two steps.
+    const web_step = b.step("web", "Build the web client (npm install + vite build)");
+    const npm_install = b.addSystemCommand(&.{ "npm", "--prefix", "web", "install", "--no-fund", "--no-audit" });
+    const npm_build = b.addSystemCommand(&.{ "npm", "--prefix", "web", "run", "build" });
+    npm_build.step.dependOn(&npm_install.step);
+    web_step.dependOn(&npm_build.step);
+
+    const serve_step = b.step("serve", "Build the web client and serve it via termwire-webd");
+    const serve_cmd = b.addRunArtifact(webd_exe);
+    if (b.args) |args| serve_cmd.addArgs(args);
+    serve_cmd.step.dependOn(&npm_build.step);
+    serve_step.dependOn(&serve_cmd.step);
+
+    const fmt_step = b.step("fmt", "Format Zig sources");
+    const fmt = b.addFmt(.{ .paths = &.{ "build.zig", "daemon", "protocol", "cli", "webd" } });
+    fmt_step.dependOn(&fmt.step);
 
     const test_step = b.step("test", "Run all tests");
     inline for (.{ daemon_mod, protocol_mod, cli_mod, webd_mod }) |mod| {

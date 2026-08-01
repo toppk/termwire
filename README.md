@@ -65,12 +65,17 @@ zig build test
 Try it:
 
 ```shell-session
-zig-out/bin/termwired      # terminal 1: run the daemon
+zig build run              # terminal 1: run the daemon
 zig-out/bin/tw new         # terminal 2: create a session and attach
                            #   ... work, then Ctrl-\ to detach ...
 zig-out/bin/tw ls          # sessions survive their windows
 zig-out/bin/tw attach 1    # pick up exactly where you left off
+zig build serve            # terminal 3: web client on 127.0.0.1:7181
 ```
+
+Every task is a `zig build` step — `zig build --help` lists them
+(`run`, `test`, `web`, `serve`, `fmt`). The `web`/`serve` steps are
+the only ones that need node/npm.
 
 ## Roadmap and Status
 
@@ -124,9 +129,8 @@ daemon's Unix sockets (`/ws/control`, `/ws/session/<id>`). The UI is
 Vue 3 with Motion for animation and xterm.js (same 6.0.0 as the
 vendored pin): a live session sidebar with create/kill, and a
 terminal pane that follows the browser layout and keeps the PTY size
-in sync. Localhost only, no auth yet. Build it with
-`cd web && npm install && npm run build`, then run
-`zig-out/bin/termwire-webd` and open <http://127.0.0.1:7181>.
+in sync. Localhost only, no auth yet. `zig build serve` builds the
+UI and starts the bridge; open <http://127.0.0.1:7181>.
 
 ## Vendored dependencies
 
